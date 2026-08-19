@@ -201,7 +201,8 @@ static int hook_setter(int idx, uint64_t slide) {
     if (!tramp) { TLog("[RT] %s mmap_near FAIL\n", sc->name); return 0; }
     build_trampoline(tramp, rt, sc->field_imm, logger_addr(idx));
 
-    int64_t b_off = (int64_t)(tramp - (runtime + 4));
+    // B 指令 PC = runtime (指令自身地址), target = runtime + imm26*4 = tramp
+    int64_t b_off = (int64_t)(tramp - runtime);
     if (b_off / 4 < -0x2000000 || b_off / 4 >= 0x2000000) {
         TLog("[RT] %s trampoline 超出 B 范围, 跳过\n", sc->name);
         return 0;
