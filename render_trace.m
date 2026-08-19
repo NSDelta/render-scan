@@ -33,6 +33,26 @@
 #import <unistd.h>
 #import <fcntl.h>
 #import <sys/mman.h>
+#import <sys/syscall.h>
+#import <sys/ptrace.h>
+
+// 设置 CS_DEBUGGED 标志 (禁用本进程代码签名检查), 使代码页可写可执行。
+// ptrace(PT_TRACE_ME) 是经典方法 (进程自己标记为被调试, 无需 root);
+// csops 兜底 (越狱环境 syscall 通常被允许)。
+#define SYS_csops 169
+#define CSOPS_STATUS 0
+#define CSOPS_SET_STATUS 1
+#define CS_DEBUGGED 0x800
+static void enable_cs_debug(void) {
+    ptrace(PT_TRACE_ME, 0, 0, 0);
+    int flags = 0;
+    if (syscall(SYS_csops, getpid(), CSOPS_STATUS, &flags, sizeof(flags)) == 0) {
+        if (!(flags & CS_DEBUGGED)) {
+            flags |= CS_DEBUGGED;
+            syscall(SYS_csops, getpid(), CSOPS_SET_STATUS, &flags, sizeof(flags));
+        }
+    }
+}
 
 #define MAX_CALLS 512
 #define MAX_SETTERS 16
@@ -165,7 +185,14 @@ static int make_writable(uint8_t *addr) {
     uintptr_t page = (uintptr_t)addr & ~0xFFFULL;
     kern_return_t kr = vm_protect(mach_task_self(), (vm_address_t)page, 0x4000, FALSE,
                                   0x1 | 0x2 | 0x4);   // READ|WRITE|EXECUTE, 无 COPY
-    return kr == KERN_SUCCESS;
+    if (kr != KERN_SUCCESS) {
+        int flags = 0;
+        long r = syscall(SYS_csops, getpid(), CSOPS_STATUS, &flags, sizeof(flags));
+        TLog("[RT] vm_protect fail kr=0x%x csops=%ld csflags=0x%x debugged=%d\n",
+             kr, r, flags, (flags & CS_DEBUGGED) ? 1 : 0);
+        return 0;
+    }
+    return 1;
 }
 
 // ---------------- 指令生成 ----------------
@@ -255,7 +282,8 @@ static int hook_setter(int idx, uint64_t slide) {
 // ---------------- 构造器 ----------------
 __attribute__((constructor))
 static void init(void) {
-    TLog("[RT] render trace dylib v3 loaded pid=%d\n", getpid());
+    TLog("[RT] render trace dylib v4 loaded pid=%d\n", getpid());
+    enable_cs_debug();
 
     for (uint32_t i = 0; i < _dyld_image_count(); i++) {
         const char *name = _dyld_get_image_name(i);
