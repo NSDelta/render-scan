@@ -25,7 +25,7 @@
 #import <Foundation/Foundation.h>
 #import <mach-o/dyld.h>
 #import <mach-o/loader.h>
-#import <libkern/OSCacheControl.h>
+#import <mach/mach.h>
 #import <stdio.h>
 #import <string.h>
 #import <stdarg.h>
@@ -114,6 +114,18 @@ static uint64_t logger_addr(int n) {
     }
 }
 
+// 清 I-cache (Dopamine 下不经系统 API, 避免触发 CODESIGNING 检查)
+static void flush_icache(void *addr, size_t len) {
+    __builtin___clear_cache((char *)addr, (char *)addr + len);
+}
+
+// 让代码页可写 (Dopamine 下 vm_protect 比 mprotect 可靠)
+static void make_writable(uint8_t *addr) {
+    uintptr_t page = (uintptr_t)addr & ~0xFFFULL;
+    vm_protect(mach_task_self(), (vm_address_t)page, 0x4000, FALSE,
+               VM_PROT_READ | VM_PROT_WRITE | VM_PROT_EXEC | VM_PROT_COPY);
+}
+
 // ---------------- 指令生成 ----------------
 static void emit32(uint32_t **p, uint32_t w) { **p = w; (*p)++; }
 
@@ -135,7 +147,7 @@ static void build_trampoline(uint8_t *mem, uint32_t rt, uint32_t imm, uint64_t l
     emit32(&p, 0xA8C17BE0);                          // ldp x0, x30, [sp], #16
     emit32(&p, 0xB9000000 | (rt << 0) | ((imm / 4) << 10));                  // str w<rt>,[x0,#imm]
     emit32(&p, 0xD65F03C0);                          // ret
-    sys_icache_invalidate(mem, (uint8_t *)p - mem);
+    flush_icache(mem, (uint8_t *)p - mem);
 }
 
 // 在 target ±128MB 内分配可执行内存
@@ -186,13 +198,9 @@ static int hook_setter(int idx, uint64_t slide) {
     }
     uint32_t b_instr = 0x14000000 | ((uint32_t)(b_off / 4) & 0x3FFFFFF);
 
-    uintptr_t page = (uintptr_t)runtime & ~0xFFFULL;
-    if (mprotect((void *)page, 0x4000, PROT_READ | PROT_WRITE | PROT_EXEC) != 0) {
-        TLog("[RT] %s mprotect FAIL\n", sc->name);
-        return 0;
-    }
+    make_writable(runtime);
     *(uint32_t *)runtime = b_instr;
-    sys_icache_invalidate(runtime, 4);
+    flush_icache(runtime, 4);
     TLog("[RT] hooked %s @0x%llx (rt=w%d imm=0x%x) tramp=%p b_off=%lld\n",
          sc->name, sc->file_off, rt, sc->field_imm, tramp, (long long)b_off);
     return 1;
