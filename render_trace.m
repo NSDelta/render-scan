@@ -34,17 +34,18 @@
 #import <fcntl.h>
 #import <sys/mman.h>
 #import <sys/syscall.h>
-#import <sys/ptrace.h>
 
 // 设置 CS_DEBUGGED 标志 (禁用本进程代码签名检查), 使代码页可写可执行。
-// ptrace(PT_TRACE_ME) 是经典方法 (进程自己标记为被调试, 无需 root);
+// ptrace(PT_TRACE_ME) 是经典方法 (进程自己标记为被调试, 无需 root, iOS 上为裸 syscall);
 // csops 兜底 (越狱环境 syscall 通常被允许)。
+#define SYS_ptrace 26
+#define PT_TRACE_ME 0
 #define SYS_csops 169
 #define CSOPS_STATUS 0
 #define CSOPS_SET_STATUS 1
 #define CS_DEBUGGED 0x800
 static void enable_cs_debug(void) {
-    ptrace(PT_TRACE_ME, 0, 0, 0);
+    syscall(SYS_ptrace, PT_TRACE_ME, 0, 0, 0);
     int flags = 0;
     if (syscall(SYS_csops, getpid(), CSOPS_STATUS, &flags, sizeof(flags)) == 0) {
         if (!(flags & CS_DEBUGGED)) {
