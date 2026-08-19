@@ -122,8 +122,9 @@ static void flush_icache(void *addr, size_t len) {
 // 让代码页可写 (Dopamine 下 vm_protect 比 mprotect 可靠)
 static void make_writable(uint8_t *addr) {
     uintptr_t page = (uintptr_t)addr & ~0xFFFULL;
+    // VM_PROT_READ=0x1 WRITE=0x2 EXECUTE=0x4 COPY=0x10 (直接数值, 兼容 iOS SDK)
     vm_protect(mach_task_self(), (vm_address_t)page, 0x4000, FALSE,
-               VM_PROT_READ | VM_PROT_WRITE | VM_PROT_EXEC | VM_PROT_COPY);
+               0x1 | 0x2 | 0x4 | 0x10);
 }
 
 // ---------------- 指令生成 ----------------
