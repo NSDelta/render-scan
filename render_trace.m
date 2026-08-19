@@ -114,9 +114,18 @@ static uint64_t logger_addr(int n) {
     }
 }
 
-// 清 I-cache (Dopamine 下不经系统 API, 避免触发 CODESIGNING 检查)
+// 清 I-cache (内联汇编, 不依赖系统 API / 内建函数, 避免链接 ___clear_cache)
 static void flush_icache(void *addr, size_t len) {
-    __builtin___clear_cache((char *)addr, (char *)addr + len);
+    uintptr_t start = (uintptr_t)addr;
+    uintptr_t end = (uintptr_t)addr + len;
+    uintptr_t p;
+    for (p = start & ~63ULL; p < end + 63; p += 64)
+        __asm__ volatile("dc civac, %0" : : "r"(p) : "memory");
+    __asm__ volatile("dsb ish" : : : "memory");
+    for (p = start & ~63ULL; p < end + 63; p += 64)
+        __asm__ volatile("ic ivau, %0" : : "r"(p) : "memory");
+    __asm__ volatile("dsb ish" : : : "memory");
+    __asm__ volatile("isb" : : : "memory");
 }
 
 // 让代码页可写 (Dopamine 下 vm_protect 比 mprotect 可靠)
