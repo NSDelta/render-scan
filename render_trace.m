@@ -159,12 +159,13 @@ static void flush_icache(void *addr, size_t len) {
     __asm__ volatile("isb" : : : "memory");
 }
 
-// 让代码页可写 (Dopamine 下 vm_protect 比 mprotect 可靠)
-static void make_writable(uint8_t *addr) {
+// 让代码页可写并返回是否成功 (Dopamine 下原页本身可写; 绝不带 VM_PROT_COPY,
+// 否则 COW 副本无有效代码签名, 执行同页其他代码时 AMFI 报 Permission fault 闪退)
+static int make_writable(uint8_t *addr) {
     uintptr_t page = (uintptr_t)addr & ~0xFFFULL;
-    // VM_PROT_READ=0x1 WRITE=0x2 EXECUTE=0x4 COPY=0x10 (直接数值, 兼容 iOS SDK)
-    vm_protect(mach_task_self(), (vm_address_t)page, 0x4000, FALSE,
-               0x1 | 0x2 | 0x4 | 0x10);
+    kern_return_t kr = vm_protect(mach_task_self(), (vm_address_t)page, 0x4000, FALSE,
+                                  0x1 | 0x2 | 0x4);   // READ|WRITE|EXECUTE, 无 COPY
+    return kr == KERN_SUCCESS;
 }
 
 // ---------------- 指令生成 ----------------
@@ -240,7 +241,10 @@ static int hook_setter(int idx, uint64_t slide) {
     }
     uint32_t b_instr = 0x14000000 | ((uint32_t)(b_off / 4) & 0x3FFFFFF);
 
-    make_writable(runtime);
+    if (!make_writable(runtime)) {
+        TLog("[RT] %s vm_protect FAIL, 跳过 (避免直接写只读页崩溃)\n", sc->name);
+        return 0;
+    }
     *(uint32_t *)runtime = b_instr;
     flush_icache(runtime, 4);
     TLog("[RT] hooked %s @0x%llx (rt=w%d imm=0x%x) tramp=%p b_off=%lld\n",
