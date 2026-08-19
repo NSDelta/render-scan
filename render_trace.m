@@ -31,6 +31,7 @@
 #import <stdarg.h>
 #import <stdlib.h>
 #import <unistd.h>
+#import <fcntl.h>
 #import <sys/mman.h>
 
 #define MAX_CALLS 512
@@ -56,6 +57,7 @@ static const setter_cfg_t SETTERS[] = {
 // ---------------- 日志 ----------------
 static char g_log[MAX_LOG];
 static int g_len = 0;
+static char g_path[512];
 
 static void TLog(const char *fmt, ...) {
     if (g_len >= MAX_LOG - 400) return;
@@ -63,6 +65,24 @@ static void TLog(const char *fmt, ...) {
     va_start(ap, fmt);
     g_len += vsnprintf(g_log + g_len, MAX_LOG - g_len, fmt, ap);
     va_end(ap);
+}
+
+// 落盘 + stderr (纯 C, 可在任意线程调用, 不依赖 ObjC/autorelease pool)
+static void save_log(void) {
+    if (!g_path[0]) {
+        const char *home = getenv("HOME");
+        if (home) snprintf(g_path, sizeof(g_path), "%s/Documents/render_trace.log", home);
+    }
+    if (g_path[0]) {
+        int fd = open(g_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (fd >= 0) {
+            ssize_t wr = write(fd, g_log, g_len);
+            close(fd);
+            (void)wr;
+        }
+    }
+    fprintf(stderr, "%s", g_log);
+    fflush(stderr);
 }
 
 uint64_t g_slide = 0;
@@ -76,18 +96,29 @@ __attribute__((noinline))
 static void record_call(int idx, uint64_t call_vaddr, uint64_t this_ptr, uint32_t val) {
     if (idx < 0 || idx >= NSETTERS) return;
     uint64_t file_off = call_vaddr - g_slide - 0x100000000ULL;
-    float f; memcpy(&f, &val, 4);
-    TLog("[RT] %s file=0x%llx val=0x%08x (%.2f) this=%llx\n",
-         SETTERS[idx].name, file_off, val, f, this_ptr);
     call_entry_t *arr = g_calls[idx];
     for (int i = 0; i < g_call_n[idx]; i++) {
-        if (arr[i].call == file_off) { arr[i].val = val; arr[i].count++; return; }
+        if (arr[i].call == file_off) {
+            if (arr[i].val != val) {
+                arr[i].val = val;
+                float f; memcpy(&f, &val, 4);
+                TLog("[RT] %s file=0x%llx 值变化 -> 0x%08x (%.2f) this=%llx\n",
+                     SETTERS[idx].name, file_off, val, f, this_ptr);
+                save_log();
+            }
+            arr[i].count++;
+            return;
+        }
     }
     if (g_call_n[idx] < MAX_CALLS) {
         arr[g_call_n[idx]].call = file_off;
         arr[g_call_n[idx]].val = val;
         arr[g_call_n[idx]].count = 1;
         g_call_n[idx]++;
+        float f; memcpy(&f, &val, 4);
+        TLog("[RT] %s file=0x%llx val=0x%08x (%.2f) this=%llx\n",
+             SETTERS[idx].name, file_off, val, f, this_ptr);
+        save_log();
     }
 }
 
@@ -237,12 +268,5 @@ static void init(void) {
         break;
     }
 
-    NSString *doc = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
-    if (doc) {
-        NSData *d = [NSData dataWithBytes:g_log length:g_len];
-        [d writeToFile:[doc stringByAppendingPathComponent:@"render_trace.log"] atomically:YES];
-        NSLog(@"[RT] initial log -> %@/render_trace.log", doc);
-    }
-    fprintf(stderr, "%s", g_log);
-    fflush(stderr);
+    save_log();
 }
